@@ -1,0 +1,19 @@
+[project]
+name = "eval-system"
+version = "0.1.0"
+description = "Harbor-backed agent evaluation: unify artifacts + runtraces for downstream scoring"
+requires-python = ">=3.12"
+dependencies = [
+    "harbor>=0.16",
+    "pydantic>=2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eval_system"]
+
+[tool.uv]
+package = true

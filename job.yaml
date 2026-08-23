@@ -1,0 +1,13 @@
+# Harbor job config: 端到端评测 (oracle agent, 无需 API key)
+# 用法: harbor run -c job.yaml
+n_attempts: 1
+timeout_multiplier: 1.0
+n_concurrent_trials: 1
+quiet: false
+environment:
+  type: docker
+  delete: true
+agents:
+  - name: oracle
+tasks:
+  - path: /home/administrator/eval-tasks/write-report

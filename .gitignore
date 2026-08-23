@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+
+# Secrets — never commit real keys
+.env
+
+# 运行产物(闭源)— Harbor jobs/trials 目录(含 trial 数据、artifacts、runtrace)
+jobs/
+jobs-v2/
+*.log
+
+# OS
+.DS_Store

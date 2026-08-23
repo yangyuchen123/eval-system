@@ -1,0 +1,11 @@
+n_attempts: 1
+n_concurrent_trials: 2
+quiet: false
+environment:
+  type: docker
+  delete: true
+agents:
+  - name: oracle
+  - name: nop
+tasks:
+  - path: /home/administrator/eval-tasks/write-report
