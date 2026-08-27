@@ -88,6 +88,9 @@ __all__ = [
     "write_trial_result",
     "read_trial_result",
     "load_spec",
+    "benchmark_to_task_specs",
+    "materialize_benchmark_tasks",
+    "trial_results_to_agent_eval",
     # v1
     "EvalSample",
     "EvalSample",
@@ -100,3 +103,9 @@ __all__ = [
 ]
 
 __version__ = "0.1.0"
+
+from eval_system.integrations import (  # noqa: F401,E402
+    benchmark_to_task_specs,
+    materialize_benchmark_tasks,
+    trial_results_to_agent_eval,
+)

@@ -61,8 +61,10 @@ class LocalBackend(ExecutionBackend):
         spec_refs = write_specs(trial_dir, {"task": task, "agent": agent, "environment": environment})
 
         async def _runner() -> TrialResult:
-            await asyncio.to_thread(self._execute, trial_dir, task, agent)
-            return self._build_result(trial_dir, task, agent, spec_refs, run_id)
+            await self._execute_async(trial_dir, task, agent)
+            result = self._build_result(trial_dir, task, agent, spec_refs, run_id)
+            write_trial_result(trial_dir, result)
+            return result
 
         return AsyncTrial(trial_id=trial_id, run_id=run_id, task=asyncio.ensure_future(_runner()))
 
@@ -73,20 +75,37 @@ class LocalBackend(ExecutionBackend):
         return read_trial_result(trial_dir)
 
     # -- 本地执行 -----------------------------------------------------------
-    def _execute(self, trial_dir: Path, task: TaskSpec, agent: AgentSpec) -> None:
+    async def _execute_async(self, trial_dir: Path, task: TaskSpec, agent: AgentSpec) -> None:
+        """Execute the optional local command without blocking the event loop."""
         artifacts = trial_dir / "artifacts"
         (artifacts / ARTIFACT_INSTRUCTION).write_text(task.instruction, encoding="utf-8")
         (artifacts / ARTIFACT_AGENT).write_text(
             f"{agent.name} {agent.version or ''} {agent.model or ''}".strip(),
             encoding="utf-8",
         )
-
         command = (task.metadata or {}).get("local_command")
         if not command:
             return
-        proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
-        (artifacts / ARTIFACT_OUTPUT).write_text(proc.stdout, encoding="utf-8")
-        (trial_dir / "exit_code.txt").write_text(str(proc.returncode), encoding="utf-8")
+        # LocalBackend is a deliberately small fallback backend. Use the
+        # synchronous subprocess API here: this environment's sandbox can
+        # leave asyncio subprocess transports/waiters unresolved, even for
+        # ``echo``. HarborBackend remains the async production backend.
+        try:
+            completed = subprocess.run(
+                str(command),
+                shell=True,
+                executable="/bin/bash",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError("local command exceeded 120 seconds") from exc
+        (artifacts / ARTIFACT_OUTPUT).write_text(
+            completed.stdout.decode("utf-8", errors="replace"), encoding="utf-8"
+        )
+        (trial_dir / "exit_code.txt").write_text(str(completed.returncode), encoding="utf-8")
 
     def _build_result(
         self,

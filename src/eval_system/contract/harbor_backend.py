@@ -10,10 +10,8 @@
 from __future__ import annotations
 
 import asyncio
-import glob
 import json
 import shutil
-import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +23,6 @@ from eval_system.contract.specs import AgentSpec, EnvironmentSpec, TaskSpec
 from eval_system.contract.trial import (
     Producer,
     TrialResult,
-    load_spec,
     read_trial_result,
     write_specs,
     write_trial_result,
@@ -140,10 +137,12 @@ class HarborBackend(ExecutionBackend):
         jobs_dir: str | Path,
         *,
         harbor_cmd: str | None = None,
+        keep_workdir: bool = False,
     ):
-        self.jobs_dir = Path(jobs_dir)
+        self.jobs_dir = Path(jobs_dir).expanduser()
         self._harbor_cmd = harbor_cmd or _default_harbor_cmd()
-        self._loader = HarborEvalLoader(jobs_dir)
+        self.keep_workdir = keep_workdir
+        self._loader = HarborEvalLoader(self.jobs_dir)
 
     # -- 读侧 --------------------------------------------------------------
     def list_trials(self) -> list[str]:
@@ -175,75 +174,106 @@ class HarborBackend(ExecutionBackend):
         run_id: str | None = None,
     ) -> Trial:
         workdir = Path(tempfile.mkdtemp(prefix="eval-system-"))
-        job_yaml = workdir / "job.yaml"
-        out_dir = self.jobs_dir / (run_id or datetime.now(timezone.utc).strftime("%Y-%m-%d__%H-%M-%S"))
-        out_dir.mkdir(parents=True, exist_ok=True)
+        job_config = workdir / "job.json"
+        job_name = run_id or datetime.now(timezone.utc).strftime("%Y-%m-%d__%H-%M-%S")
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
 
-        self._write_job_yaml(job_yaml, task, agent, environment)
+        self._write_job_config(job_config, task, agent, environment)
 
         async def _runner() -> TrialResult:
             cmd = [
-                self._harbor_cmd, "run", "-c", str(job_yaml), "-o", str(out_dir),
+                self._harbor_cmd, "run", "-c", str(job_config),
+                "--jobs-dir", str(self.jobs_dir), "--job-name", job_name,
                 "--quiet",
             ]
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
             )
-            _, stderr = await proc.communicate()
+            output, _ = await proc.communicate()
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"harbor run failed (exit {proc.returncode}): "
-                    f"{stderr.decode(errors='replace')[-2000:]}"
+                    f"{output.decode(errors='replace')[-4000:]}"
                 )
-            # 找到本次运行产出的 trial（out_dir 下递归）
-            trials = list(_iter_trial_dirs(out_dir))
+            job_dir = self.jobs_dir / job_name
+            trials = list(_iter_trial_dirs(job_dir))
             if not trials:
-                raise RuntimeError("harbor run finished but produced no trial dir")
+                raise RuntimeError(
+                    f"harbor run finished but produced no trial dir under {job_dir}; "
+                    f"output: {output.decode(errors='replace')[-1000:]}"
+                )
             return await self.read_trial(trials[0].name)
 
-        trial_id = f"{task.name.replace('/', '__')}__{agent.name}"
-        return AsyncTrial(trial_id=trial_id, run_id=run_id, task=asyncio.ensure_future(_runner()))
+        async def _cleanup() -> None:
+            if not self.keep_workdir:
+                shutil.rmtree(workdir, ignore_errors=True)
 
-    def _write_job_yaml(
+        async def _run_and_cleanup() -> TrialResult:
+            try:
+                return await _runner()
+            finally:
+                await _cleanup()
+
+        trial_id = f"{task.name.replace('/', '__')}__{agent.name}"
+        return AsyncTrial(trial_id=trial_id, run_id=job_name, task=asyncio.ensure_future(_run_and_cleanup()))
+
+    def _write_job_config(
         self,
         path: Path,
         task: TaskSpec,
         agent: AgentSpec,
         environment: EnvironmentSpec,
     ) -> None:
-        """从三个 Spec 生成 Harbor job.yaml（当前支持 path/registry 任务 + docker 环境）。"""
+        """Write a Harbor ``JobConfig`` as JSON.
+
+        JSON is intentional here: it avoids lossy hand-written YAML and is
+        accepted by Harbor's public CLI. The adapter maps only serializable
+        fields from the neutral specs; Harbor remains the execution authority.
+        """
         content_ref = task.content_ref
-        if content_ref is None or content_ref.type not in ("path", "registry"):
-            raise NotImplementedError(
-                "HarborBackend.run 目前支持 path/registry 任务；"
-                f"got content_ref={content_ref}"
-            )
-        task_entry = (
-            {"path": content_ref.path}
-            if content_ref.type == "path"
-            else {"name": content_ref.name, "ref": content_ref.ref}
-        )
-        agent_entry = {"name": agent.name}
+        if content_ref is None:
+            raise NotImplementedError("HarborBackend.run requires task.content_ref")
+        if content_ref.type == "path":
+            task_entry: dict[str, Any] = {"path": content_ref.path}
+        elif content_ref.type == "registry":
+            task_entry = {"name": content_ref.name, "ref": content_ref.ref}
+        elif content_ref.type == "git":
+            if not content_ref.url or not content_ref.path:
+                raise ValueError("git tasks require content_ref.url and content_ref.path")
+            task_entry = {
+                "git_url": content_ref.url,
+                "git_commit_id": content_ref.commit,
+                "path": content_ref.path,
+            }
+        else:
+            raise NotImplementedError(f"Unsupported task content_ref type: {content_ref.type}")
+
+        agent_entry: dict[str, Any] = {"name": agent.name}
         if agent.model:
             agent_entry["model_name"] = agent.model
+        if agent.config:
+            for key in ("import_path", "kwargs", "env", "skills", "mcp_servers", "n_concurrent"):
+                if key in agent.config:
+                    agent_entry[key] = agent.config[key]
 
-        yaml = (
-            "n_attempts: 1\n"
-            "n_concurrent_trials: 1\n"
-            "quiet: true\n"
-            f"environment:\n  type: {environment.type}\n  delete: true\n"
-            f"agents:\n  - {_yaml_inline(agent_entry)}\n"
-            f"tasks:\n  - {_yaml_inline(task_entry)}\n"
-        )
-        path.write_text(yaml, encoding="utf-8")
-
-
-def _yaml_inline(mapping: dict[str, Any]) -> str:
-    """单行 YAML 映射（简单值场景够用）。"""
-    items = ", ".join(f"{k}: {json.dumps(str(v))}" for k, v in mapping.items() if v is not None)
-    return "{" + items + "}"
+        env_entry: dict[str, Any] = {"type": environment.type, "delete": True}
+        resources = environment.resources
+        for source, target in (("cpus", "override_cpus"), ("memory_mb", "override_memory_mb"),
+                               ("storage_mb", "override_storage_mb"), ("gpus", "override_gpus")):
+            value = getattr(resources, source, None)
+            if value is not None:
+                env_entry[target] = value
+        config = {
+            "n_attempts": 1,
+            "n_concurrent_trials": 1,
+            "quiet": True,
+            "environment": env_entry,
+            "agents": [agent_entry],
+            "tasks": [task_entry],
+        }
+        path.write_text(json.dumps(config, indent=2, default=str), encoding="utf-8")
 
 
 def harbor_backend_from_env() -> HarborBackend:

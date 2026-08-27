@@ -155,3 +155,33 @@ def test_trial_result_roundtrip():
         assert loaded.specs["task"].checksum == refs["task"].checksum
     finally:
         shutil.rmtree(tmp)
+
+
+def test_harbor_backend_writes_valid_job_config(tmp_path: Path):
+    """HarborBackend 生成的配置可被当前 Harbor JobConfig 接受。"""
+    task_dir = tmp_path / "task"
+    (task_dir / "tests").mkdir(parents=True)
+    (task_dir / "instruction.md").write_text("do it", encoding="utf-8")
+    task = TaskSpec(
+        task_id="demo@1.0.0", name="demo", version="1.0.0",
+        instruction="do it", instruction_checksum=content_checksum("do it"),
+        task_checksum="sha256:demo", content_ref={"type": "path", "path": str(task_dir)},
+    )
+    agent = AgentSpec(
+        name="oracle", model="openrouter/deepseek/deepseek-v4-flash-0731",
+        provider="openrouter", config={"kwargs": {"foo": "bar"}},
+    )
+    env = EnvironmentSpec(type="docker")
+    backend = HarborBackend(tmp_path / "jobs")
+    config_path = tmp_path / "job.json"
+    backend._write_job_config(config_path, task, agent, env)
+
+    import subprocess
+    completed = subprocess.run(
+        [str(Path(__file__).parents[1] / ".venv/bin/harbor"), "run", "--print-config", "-c", str(config_path)],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    resolved = json.loads(completed.stdout)
+    assert resolved["tasks"][0]["path"] == str(task_dir)
+    assert resolved["agents"][0]["model_name"] == "openrouter/deepseek/deepseek-v4-flash-0731"
