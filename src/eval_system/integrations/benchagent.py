@@ -19,6 +19,27 @@ def _safe(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "task"
 
 
+def _feedback_source_context(query: dict[str, Any], payload: dict[str, Any]) -> str:
+    """Project run purpose into task metadata without coupling to one benchmark ID."""
+    for container in (query, payload.get("metadata") or {}, payload.get("spec") or {}):
+        if not isinstance(container, dict):
+            continue
+        for key in ("feedback_source_context", "source_context", "run_purpose", "benchmark_stage", "evaluation_mode"):
+            if container.get(key) is not None:
+                return str(container[key]).strip().lower().replace(" ", "_")
+    text = " ".join(str(query.get(key) or "") for key in ("id", "name", "description")).lower()
+    for kind, pattern in (
+        ("smoke", r"(?:^|[^a-z])smoke(?:[^a-z]|$)"),
+        ("debug", r"(?:^|[^a-z])debug(?:[^a-z]|$)"),
+        ("meta_eval", r"meta[-_ ]?eval|calibration"),
+        ("validation", r"(?:^|[^a-z])(validation|synthetic|demo|test)(?:[^a-z]|$)"),
+        ("production", r"(?:^|[^a-z])(production|formal)(?:[^a-z]|$)"),
+    ):
+        if re.search(pattern, text):
+            return kind
+    return "unknown"
+
+
 def _instruction(sample: dict[str, Any]) -> str:
     parts = []
     if sample.get("context"):
@@ -39,6 +60,7 @@ def benchmark_to_task_specs(path: str | Path, *, task_root: str | Path | None = 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     query = payload.get("query") or payload.get("spec", {}).get("user_query") or {}
     samples = payload.get("samples") or []
+    feedback_source_context = _feedback_source_context(query, payload)
     specs: list[TaskSpec] = []
     for index, sample in enumerate(samples):
         subtask = _safe(str(sample.get("subtask_id", "default")))
@@ -58,6 +80,7 @@ def benchmark_to_task_specs(path: str | Path, *, task_root: str | Path | None = 
             "context": sample.get("context"),
             "media": sample.get("media") or [],
             "artifact_path": "/logs/artifacts/answer.txt",
+            "feedback_source_context": feedback_source_context,
         }
         task_name = task_id.split("@", 1)[0]
         content_ref = None
@@ -136,12 +159,22 @@ def materialize_benchmark_tasks(
         (task_dir / "environment" / "Dockerfile").write_text(
             "FROM python:3.12-slim\n", encoding="utf-8"
         )
+        # Harbor validates task.name as an ``org/name`` package name.  The
+        # neutral TaskSpec name intentionally contains the full benchmark
+        # path, so keep that stable in metadata/task_id but project only the
+        # Harbor-facing TOML name to one valid package segment.
+        harbor_task_name = f"benchagent/{_safe(spec.name)}"
         (task_dir / "task.toml").write_text(
             "schema_version = \"1.4\"\n\n"
-            f"[task]\nname = \"{spec.name}\"\nversion = \"{spec.version}\"\n"
+            f"[task]\nname = \"{harbor_task_name}\"\nversion = \"{spec.version}\"\n"
             "authors = []\nkeywords = [\"benchagent\"]\n\n"
             "[metadata]\nsource = \"benchagent\"\n"
-            f"query_id = \"{spec.metadata.get('query_id', '')}\"\n\n"
+            f"query_id = {json.dumps(spec.metadata.get('query_id', ''))}\n"
+            f"benchmark_id = {json.dumps(spec.metadata.get('query_id', ''))}\n"
+            f"subtask_id = {json.dumps(spec.metadata.get('subtask_id', ''))}\n"
+            f"sample_index = {json.dumps(spec.metadata.get('sample_index', ''))}\n"
+            f"dataset_id = {json.dumps(spec.source or '')}\n"
+            f"feedback_source_context = {json.dumps(spec.metadata.get('feedback_source_context', 'unknown'))}\n\n"
             "[verifier]\ntimeout_sec = 120.0\n\n"
             "[agent]\ntimeout_sec = 300.0\n\n"
             "[environment]\nbuild_timeout_sec = 600.0\ncpus = 1\nmemory_mb = 2048\n"

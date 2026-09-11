@@ -112,7 +112,7 @@ class HarborEvalLoader:
         return EvalSample(
             sample_id=trial_dir.name,
             trial_dir=str(trial_dir.resolve()),
-            scenario=self._build_scenario(result, config),
+            scenario=self._build_scenario(trial_dir, result, config),
             agent=self._build_agent(result),
             artifacts=self._build_artifacts(trial_dir),
             runtrace=self._build_runtrace(trial_dir, result),
@@ -122,23 +122,34 @@ class HarborEvalLoader:
         )
 
     # -- builders -----------------------------------------------------------
-    def _build_scenario(self, result: dict, config: dict) -> EvalScenario:
-        task_name = result.get("task_name")
-        task_id = result.get("task_id")
-        scenario_id = (
+    def _build_scenario(self, trial_dir: Path, result: dict, config: dict) -> EvalScenario:
+        # Prefer eval-system's normalized TaskSpec when present.  Harbor's raw
+        # result.task_id for local tasks is a path object and loses benchmark
+        # provenance, while specs/task.json preserves the stable task_id and
+        # benchagent metadata needed by the feedback loop.
+        task_spec = _safe_json(trial_dir / "specs" / "task.json") or {}
+        task_name = task_spec.get("name") or result.get("task_name")
+        raw_task_id = task_spec.get("task_id") or result.get("task_id")
+        task_id = _stringify_task_id(raw_task_id)
+        scenario_id = task_id or (
             f"{task_name}@{config.get('task', {}).get('ref')}"
-            if task_name
-            else str(task_id or "unknown")
+            if task_name else "unknown"
         )
-        instruction = self._load_instruction(config)
+        instruction = task_spec.get("instruction") or self._load_instruction(config)
+        scenario_config = dict(config)
+        metadata = task_spec.get("metadata")
+        if isinstance(metadata, dict):
+            scenario_config["benchmark_metadata"] = metadata
+            for key, value in metadata.items():
+                scenario_config.setdefault(key, value)
         return EvalScenario(
             scenario_id=scenario_id,
             task_name=task_name,
-            task_id=_stringify_task_id(task_id),
-            source=result.get("source"),
+            task_id=task_id,
+            source=task_spec.get("source") or result.get("source"),
             instruction=instruction,
-            task_checksum=result.get("task_checksum"),
-            config=config,
+            task_checksum=task_spec.get("task_checksum") or result.get("task_checksum"),
+            config=scenario_config,
         )
 
     @staticmethod
@@ -201,7 +212,36 @@ class HarborEvalLoader:
         trajectory_path = agent_dir / _TRAJECTORY
         trajectory = _safe_json(trajectory_path) if trajectory_path.is_file() else None
 
-        native_files: list[str] = []
+        # Harbor may collect a Pi native session without invoking the custom
+        # agent post-run hook (or the hook may fail closed).  Reuse the
+        # lossless native JSONL as a read-side fallback so downstream
+        # AgentEval still receives the ATIF runtrace.  This does not replace
+        # the native files; it only materializes the existing projection.
+        if trajectory is None:
+            pi_sessions = sorted((agent_dir / "pi" / "sessions").glob("*.jsonl"))
+            if pi_sessions:
+                try:
+                    from eval_system.integrations.pi_atif import convert_pi_session_to_atif
+
+                    agent_info = result.get("agent_info") or {}
+                    model_info = agent_info.get("model_info") or {}
+                    converted = convert_pi_session_to_atif(
+                        pi_sessions[-1],
+                        agent_version=str(agent_info.get("version") or "unknown"),
+                        fallback_model_name=model_info.get("name"),
+                    )
+                    if converted is not None:
+                        trajectory = converted.to_json_dict()
+                        trajectory_path.write_text(
+                            json.dumps(trajectory, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                except Exception:
+                    # Native session remains authoritative; malformed or
+                    # future Pi events must not make trial loading fail.
+                    trajectory = None
+
+        native_files: list[str] = list()
         if agent_dir.is_dir():
             native_files = sorted(
                 str(p.relative_to(agent_dir))
