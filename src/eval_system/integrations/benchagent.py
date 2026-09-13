@@ -157,7 +157,7 @@ def materialize_benchmark_tasks(
         )
         (task_dir / "tests" / "test.sh").chmod(0o755)
         (task_dir / "environment" / "Dockerfile").write_text(
-            "FROM python:3.12-slim\n", encoding="utf-8"
+            "FROM agent-pi:0.85.1\n", encoding="utf-8"
         )
         # Harbor validates task.name as an ``org/name`` package name.  The
         # neutral TaskSpec name intentionally contains the full benchmark
@@ -176,7 +176,7 @@ def materialize_benchmark_tasks(
             f"dataset_id = {json.dumps(spec.source or '')}\n"
             f"feedback_source_context = {json.dumps(spec.metadata.get('feedback_source_context', 'unknown'))}\n\n"
             "[verifier]\ntimeout_sec = 120.0\n\n"
-            "[agent]\ntimeout_sec = 300.0\n\n"
+            "[agent]\ntimeout_sec = 600.0\n\n"
             "[environment]\nbuild_timeout_sec = 600.0\ncpus = 1\nmemory_mb = 2048\n"
             "storage_mb = 10240\ngpus = 0\nmcp_servers = []\n",
             encoding="utf-8",

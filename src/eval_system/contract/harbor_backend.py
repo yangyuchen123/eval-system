@@ -138,10 +138,12 @@ class HarborBackend(ExecutionBackend):
         *,
         harbor_cmd: str | None = None,
         keep_workdir: bool = False,
+        agent_setup_timeout_multiplier: float | None = None,
     ):
         self.jobs_dir = Path(jobs_dir).expanduser()
         self._harbor_cmd = harbor_cmd or _default_harbor_cmd()
         self.keep_workdir = keep_workdir
+        self.agent_setup_timeout_multiplier = agent_setup_timeout_multiplier
         self._loader = HarborEvalLoader(self.jobs_dir)
 
     # -- 读侧 --------------------------------------------------------------
@@ -273,6 +275,10 @@ class HarborBackend(ExecutionBackend):
             "agents": [agent_entry],
             "tasks": [task_entry],
         }
+        if self.agent_setup_timeout_multiplier is not None:
+            # Harbor JobConfig top-level field (CLI --agent-setup-timeout-multiplier).
+            # Slow local installs (nvm+pi) blew the 360s default; 指挥层指令20.
+            config["agent_setup_timeout_multiplier"] = self.agent_setup_timeout_multiplier
         path.write_text(json.dumps(config, indent=2, default=str), encoding="utf-8")
 
 
