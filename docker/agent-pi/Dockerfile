@@ -17,3 +17,4 @@ RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | b
 # 提供稳定 bin 链接便于手工排查。
 RUN ln -sfn /root/.nvm/versions/node/v22.23.2 /root/.nvm/current
 ENV PATH="/root/.nvm/current/bin:${PATH}"
+RUN python3 -m ensurepip --upgrade && python3 -m pip install --no-cache-dir pytest
