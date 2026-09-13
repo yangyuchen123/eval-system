@@ -1,4 +1,4 @@
-# agent-pi:0.85.1 — pi agent runtime base image (版本进 tag, 指令29).
+# agent-pi:0.85.1 — pi agent runtime base image (version in tag).
 # 任务 Dockerfile 第一行 FROM agent-pi:0.85.1 → Harbor 每次 trial 跳过
 # apt/nvm/pi 下载（OpenRouterPi.install() 检测 `command -v pi` 短路）,
 # setup 从分钟级降至秒级, 消除 deb.debian.org 502 与 NVM 下载失败两类故障源。

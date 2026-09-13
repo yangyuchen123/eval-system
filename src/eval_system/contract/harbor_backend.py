@@ -277,7 +277,7 @@ class HarborBackend(ExecutionBackend):
         }
         if self.agent_setup_timeout_multiplier is not None:
             # Harbor JobConfig top-level field (CLI --agent-setup-timeout-multiplier).
-            # Slow local installs (nvm+pi) blew the 360s default; 指挥层指令20.
+            # Slow local installs (nvm+pi) blew the 360s default; raise to 720s.
             config["agent_setup_timeout_multiplier"] = self.agent_setup_timeout_multiplier
         path.write_text(json.dumps(config, indent=2, default=str), encoding="utf-8")
 

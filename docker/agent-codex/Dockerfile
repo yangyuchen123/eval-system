@@ -1,4 +1,4 @@
-# agent-codex:0.154.0 — codex agent runtime base image (指令32: 与 pi@0.85.1 同为各自最新稳定).
+# agent-codex:0.154.0 — codex agent runtime base image (npm latest, parity with pi).
 # npm @openai/codex@0.154.0 (2026-09-09 latest). 阿里云 debian 源加速 apt.
 FROM python:3.12-slim
 
